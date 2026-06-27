@@ -12,6 +12,9 @@
 #include "foundation/constants.h"
 
 enum { PC_RING = 4, PC_RING_MASK = 3, PC_SIG_SCAN = 15, PC_REGEX_GRP = 2 };
+/* Confidence for a service-pattern HTTP/ASYNC edge emitted when registry
+ * resolution is empty (external, unindexed client library) — see #523. */
+#define PC_SVC_PATTERN_CONF 0.5
 #include "pipeline/pipeline.h"
 #include <stdint.h>
 #include "pipeline/pipeline_internal.h"
@@ -437,6 +440,31 @@ static int resolve_single_call(cbm_pipeline_ctx_t *ctx, CBMCall *call,
     cbm_resolution_t res = cbm_registry_resolve(ctx->registry, call->callee_name, module_qn,
                                                 imp_keys, imp_vals, imp_count);
     if (!res.qualified_name || res.qualified_name[0] == '\0') {
+        /* Resolution is empty when the callee belongs to an EXTERNAL client
+         * library whose source is not in the indexed tree (e.g. `requests.get`,
+         * `httpx.post`) — the import map skips it (no node) and no project symbol
+         * matches. The service-pattern signal lives in the RAW callee_name
+         * ("requests.get" contains "requests"), so classify on that and emit the
+         * HTTP_CALLS/ASYNC_CALLS edge directly (target is a synthesized route
+         * node, not the absent library). Without this the call is dropped and
+         * cross-repo matching finds no edge to match (#523). The parallel path
+         * has the equivalent empty-resolution fallback in resolve_file_calls. */
+        cbm_svc_kind_t esvc = cbm_service_pattern_match(call->callee_name);
+        if (esvc == CBM_SVC_HTTP || esvc == CBM_SVC_ASYNC) {
+            const char *u = call->first_string_arg;
+            bool has_url_or_topic =
+                u && u[0] != '\0' &&
+                (u[0] == '/' || strstr(u, "://") != NULL ||
+                 (esvc == CBM_SVC_ASYNC && strlen(u) > PAIR_LEN));
+            if (has_url_or_topic) {
+                cbm_resolution_t svc_res = {.qualified_name = call->callee_name,
+                                            .confidence = PC_SVC_PATTERN_CONF,
+                                            .strategy = "service_pattern",
+                                            .candidate_count = 0};
+                emit_http_async_edge(ctx, call, source_node, NULL, &svc_res, esvc);
+                return SKIP_ONE;
+            }
+        }
         return 0;
     }
 
