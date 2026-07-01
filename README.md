@@ -595,3 +595,76 @@ Scan links for every release are also included in the GitHub Release notes autom
 ## License
 
 MIT
+
+## Install (architect-local)
+
+> This section documents the AsatoCorp-internal architect install path against
+> the AsatoCorp fork's release assets. It is separate from the upstream install
+> paths above (`install.sh` / `install.ps1` / Homebrew), which target the public
+> `DeusData/codebase-memory-mcp` project. Architects on the Asato fleet follow
+> this section.
+
+Prerequisites: `curl`, `sha256sum` (Linux) or `shasum` (macOS), `tar`.
+Supported architect-fleet platforms: `darwin-arm64` and `linux-x86_64`.
+
+1. **Pick the pinned tag** from
+   [`AsatoCorp/utils-codebase-memory` releases](https://github.com/AsatoCorp/utils-codebase-memory/releases).
+   AsatoCorp release tags follow the pattern `v<upstream-version>-asato.<n>`.
+
+2. **Download the tarball and its sha256 sidecar** into a temp directory.
+   Replace `<tag>` and `<platform>` (`<platform>` is one of `darwin-arm64`,
+   `linux-x86_64`):
+
+   ```bash
+   cd "$(mktemp -d)"
+   curl -LO "https://github.com/AsatoCorp/utils-codebase-memory/releases/download/<tag>/cmm-<platform>.tar.gz"
+   curl -LO "https://github.com/AsatoCorp/utils-codebase-memory/releases/download/<tag>/cmm-<platform>.tar.gz.sha256"
+   ```
+
+3. **Verify integrity BEFORE extracting.** The sidecar's single line is
+   `<hex-hash>  cmm-<platform>.tar.gz` (two spaces, matching filename).
+   Run the platform-appropriate checker and check its exit code — do NOT
+   proceed on any non-zero exit:
+
+   ```bash
+   # Linux
+   sha256sum -c cmm-<platform>.tar.gz.sha256 || { echo "verification failed — do not extract" >&2; exit 1; }
+   # macOS
+   shasum -a 256 -c cmm-<platform>.tar.gz.sha256 || { echo "verification failed — do not extract" >&2; exit 1; }
+   ```
+
+   A successful run prints `cmm-<platform>.tar.gz: OK` and exits 0. Any
+   other output — stop, do not extract, notify the release-engineer who
+   cut the tag.
+
+4. **Extract into `~/.asato/bin/`**. Use the portable short-option form
+   (`-xzf`) so the command behaves the same on BSD `tar` (macOS default)
+   and GNU `tar` (Linux default). The extract overwrites any existing
+   `cmm` in place — architects who want to keep the prior binary should
+   move it aside first (`mv ~/.asato/bin/cmm ~/.asato/bin/cmm.prev`):
+
+   ```bash
+   mkdir -p ~/.asato/bin
+   tar -xzf cmm-<platform>.tar.gz -C ~/.asato/bin/
+   ```
+
+   The tarball unpacks to a single `cmm` executable.
+
+5. **Add `~/.asato/bin` to `PATH`** in your shell rc (`~/.zshrc` or
+   `~/.bashrc`):
+
+   ```bash
+   export PATH="$HOME/.asato/bin:$PATH"
+   ```
+
+6. **Smoke-check**:
+
+   ```bash
+   cmm --version   # prints a version string
+   ```
+
+   In V1 the fork preserves upstream `cmm --version` output verbatim;
+   whether the printed string includes the `-asato.<n>` AsatoCorp
+   suffix will be pinned by the Story 2 release-workflow contract.
+
+Rollback is `rm ~/.asato/bin/cmm` — no system-wide install, no side effects.
