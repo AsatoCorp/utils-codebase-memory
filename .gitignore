@@ -63,3 +63,4 @@ soak-results/
 # Environment files (AsatoCorp policy — never commit .env*; .env.example is permitted as documentation)
 .env*
 !.env.example
+.subagent/

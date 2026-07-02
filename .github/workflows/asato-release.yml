@@ -1,0 +1,165 @@
+name: asato-release
+
+on:
+  push:
+    tags:
+      - 'v*-asato.*'
+
+concurrency:
+  group: asato-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            os: darwin
+            arch: arm64
+            portable_suffix: ''
+            cc: clang
+            cxx: clang++
+            static: ''
+            strip_cmd: 'strip -no_uuid'
+          - runner: ubuntu-24.04
+            os: linux
+            arch: amd64
+            portable_suffix: '-portable'
+            cc: clang-18
+            cxx: clang++-18
+            static: '1'
+            strip_cmd: 'strip --strip-unneeded'
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout at tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute SOURCE_DATE_EPOCH from tag commit
+        run: |
+          SDE="$(git log -1 --pretty=%ct "${GITHUB_REF_NAME}")"
+          echo "SOURCE_DATE_EPOCH=${SDE}" >> "$GITHUB_ENV"
+
+      - name: Install gnu-tar (macOS only, for deterministic tar)
+        if: matrix.os == 'darwin'
+        run: |
+          brew install gnu-tar
+          echo "TAR=gtar" >> "$GITHUB_ENV"
+
+      - name: Select tar (Linux)
+        if: matrix.os == 'linux'
+        run: echo "TAR=tar" >> "$GITHUB_ENV"
+
+      - name: Verify pinned clang major (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          if ! command -v ${{ matrix.cc }} >/dev/null 2>&1; then
+            echo "::error::${{ matrix.cc }} not installed on ${{ matrix.runner }}. Pinned clang major must be present on the runner image." >&2
+            exit 1
+          fi
+          ${{ matrix.cc }} --version
+
+      - name: Build
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+          STATIC: ${{ matrix.static }}
+        run: |
+          scripts/build.sh --version "${GITHUB_REF_NAME}"
+          test -x build/c/codebase-memory-mcp
+
+      - name: Strip debug symbols
+        run: |
+          ${{ matrix.strip_cmd }} build/c/codebase-memory-mcp
+
+      - name: Package deterministic tarball
+        env:
+          ARCHIVE_NAME: codebase-memory-mcp-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.portable_suffix }}.tar.gz
+        run: |
+          mkdir -p out
+          cp build/c/codebase-memory-mcp out/
+          "$TAR" --sort=name \
+                 --owner=0 --group=0 --numeric-owner \
+                 --mtime="@${SOURCE_DATE_EPOCH}" \
+                 -czf "out/${ARCHIVE_NAME}" \
+                 -C out codebase-memory-mcp
+          ls -la out/
+
+      - name: Upload matrix artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cbm-${{ matrix.os }}-${{ matrix.arch }}
+          path: out/codebase-memory-mcp-*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout at tag (for release-note context)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all matrix artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: staging
+
+      - name: Assemble release directory + checksums
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          # Fail loudly on colliding archive basenames instead of silently overwriting.
+          # Matrix produces unique os-arch pairs today; guard is future-proofing.
+          while IFS= read -r -d '' src; do
+            dst="out/$(basename "$src")"
+            if [[ -e "$dst" ]]; then
+              echo "::error::duplicate release asset name: $(basename "$src")" >&2
+              exit 1
+            fi
+            cp "$src" "$dst"
+          done < <(find staging -type f -name 'codebase-memory-mcp-*.tar.gz' -print0)
+          cd out
+          sha256sum codebase-memory-mcp-*.tar.gz > checksums.txt
+          cat checksums.txt
+
+      - name: Assemble release notes file
+        # Tag annotation body is attacker-controllable by anyone who can push a
+        # v*-asato.* tag. Composing the release notes on disk (rather than via
+        # GITHUB_ENV heredoc) avoids delimiter injection AND second-order
+        # Markdown escaping into softprops's `body:` YAML block scalar.
+        env:
+          FORK_TAG: ${{ github.ref_name }}
+          FORK_SHA: ${{ github.sha }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            printf 'AsatoCorp fork release: %s\n\n' "$FORK_TAG"
+            printf 'Fork tagged commit: `%s`\n' "$FORK_SHA"
+            printf 'Workflow run: %s\n' "$RUN_URL"
+            printf 'Per-asset sha256: see attached `checksums.txt`\n\n'
+            printf 'Tag annotation body:\n\n'
+            git tag -l --format='%(contents:body)' "$FORK_TAG"
+          } > release-notes.md
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            out/codebase-memory-mcp-*.tar.gz
+            out/checksums.txt
+          fail_on_unmatched_files: true
+          generate_release_notes: false
+          body_path: release-notes.md
