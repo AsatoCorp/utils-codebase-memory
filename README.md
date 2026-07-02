@@ -605,50 +605,64 @@ MIT
 > this section.
 
 Prerequisites: `curl`, `sha256sum` (Linux) or `shasum` (macOS), `tar`.
-Supported architect-fleet platforms: `darwin-arm64` and `linux-x86_64`.
+Supported architect-fleet platforms: `darwin-arm64` and `linux-amd64` (Linux
+ships as a fully-static `-portable` build).
+
+Archive naming: `codebase-memory-mcp-<os>-<arch>[-portable].tar.gz` where
+`<os>` is `darwin` or `linux`, `<arch>` is `arm64` or `amd64`, and
+`-portable` is appended for the Linux static build. Checksums for every
+asset in a release are aggregated into a single `checksums.txt` published
+alongside the archives.
 
 1. **Pick the pinned tag** from
    [`AsatoCorp/utils-codebase-memory` releases](https://github.com/AsatoCorp/utils-codebase-memory/releases).
    AsatoCorp release tags follow the pattern `v<upstream-version>-asato.<n>`.
 
-2. **Download the tarball and its sha256 sidecar** into a temp directory.
-   Replace `<tag>` and `<platform>` (`<platform>` is one of `darwin-arm64`,
-   `linux-x86_64`):
+2. **Download the tarball and the release-wide `checksums.txt`** into a
+   temp directory. Pick your archive name:
 
    ```bash
+   # darwin-arm64
+   ARCHIVE=codebase-memory-mcp-darwin-arm64.tar.gz
+   # linux-amd64 (static portable)
+   ARCHIVE=codebase-memory-mcp-linux-amd64-portable.tar.gz
+
    cd "$(mktemp -d)"
-   curl -LO "https://github.com/AsatoCorp/utils-codebase-memory/releases/download/<tag>/cmm-<platform>.tar.gz"
-   curl -LO "https://github.com/AsatoCorp/utils-codebase-memory/releases/download/<tag>/cmm-<platform>.tar.gz.sha256"
+   curl -LO "https://github.com/AsatoCorp/utils-codebase-memory/releases/download/<tag>/${ARCHIVE}"
+   curl -LO "https://github.com/AsatoCorp/utils-codebase-memory/releases/download/<tag>/checksums.txt"
    ```
 
-3. **Verify integrity BEFORE extracting.** The sidecar's single line is
-   `<hex-hash>  cmm-<platform>.tar.gz` (two spaces, matching filename).
-   Run the platform-appropriate checker and check its exit code — do NOT
-   proceed on any non-zero exit:
+3. **Verify integrity BEFORE extracting.** `checksums.txt` holds one
+   `<hex-hash>  <archive-name>` line per asset in the release. Filter to
+   the archive you downloaded and check its exit code — do NOT proceed
+   on any non-zero exit:
 
    ```bash
    # Linux
-   sha256sum -c cmm-<platform>.tar.gz.sha256 || { echo "verification failed — do not extract" >&2; exit 1; }
+   grep " ${ARCHIVE}\$" checksums.txt | sha256sum --check - \
+     || { echo "verification failed — do not extract" >&2; exit 1; }
    # macOS
-   shasum -a 256 -c cmm-<platform>.tar.gz.sha256 || { echo "verification failed — do not extract" >&2; exit 1; }
+   grep " ${ARCHIVE}\$" checksums.txt | shasum -a 256 --check - \
+     || { echo "verification failed — do not extract" >&2; exit 1; }
    ```
 
-   A successful run prints `cmm-<platform>.tar.gz: OK` and exits 0. Any
-   other output — stop, do not extract, notify the release-engineer who
-   cut the tag.
+   A successful run prints `<archive-name>: OK` and exits 0. Any other
+   output — stop, do not extract, notify the release-engineer who cut
+   the tag.
 
 4. **Extract into `~/.asato/bin/`**. Use the portable short-option form
    (`-xzf`) so the command behaves the same on BSD `tar` (macOS default)
    and GNU `tar` (Linux default). The extract overwrites any existing
-   `cmm` in place — architects who want to keep the prior binary should
-   move it aside first (`mv ~/.asato/bin/cmm ~/.asato/bin/cmm.prev`):
+   `codebase-memory-mcp` in place — architects who want to keep the
+   prior binary should move it aside first
+   (`mv ~/.asato/bin/codebase-memory-mcp ~/.asato/bin/codebase-memory-mcp.prev`):
 
    ```bash
    mkdir -p ~/.asato/bin
-   tar -xzf cmm-<platform>.tar.gz -C ~/.asato/bin/
+   tar -xzf "${ARCHIVE}" -C ~/.asato/bin/
    ```
 
-   The tarball unpacks to a single `cmm` executable.
+   The tarball unpacks to a single `codebase-memory-mcp` executable.
 
 5. **Add `~/.asato/bin` to `PATH`** in your shell rc (`~/.zshrc` or
    `~/.bashrc`):
@@ -660,11 +674,20 @@ Supported architect-fleet platforms: `darwin-arm64` and `linux-x86_64`.
 6. **Smoke-check**:
 
    ```bash
-   cmm --version   # prints a version string
+   codebase-memory-mcp --version   # prints a version string
    ```
 
-   In V1 the fork preserves upstream `cmm --version` output verbatim;
-   whether the printed string includes the `-asato.<n>` AsatoCorp
-   suffix will be pinned by the Story 2 release-workflow contract.
+   In V1 the fork preserves upstream `codebase-memory-mcp --version`
+   output verbatim; whether the printed string includes the `-asato.<n>`
+   AsatoCorp suffix is pinned by the Story 2 release-workflow contract
+   (release notes surface the fork's tagged commit SHA and workflow-run URL).
 
-Rollback is `rm ~/.asato/bin/cmm` — no system-wide install, no side effects.
+Optional short-name alias — architects who prefer typing `cmm` can
+symlink after install:
+
+```bash
+ln -sf ~/.asato/bin/codebase-memory-mcp ~/.asato/bin/cmm
+```
+
+Rollback is `rm ~/.asato/bin/codebase-memory-mcp` (and the `cmm` symlink
+if you created one) — no system-wide install, no side effects.
